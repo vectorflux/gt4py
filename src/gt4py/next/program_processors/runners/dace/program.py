@@ -89,7 +89,7 @@ class Program(decorator.Program, dace.frontend.python.common.SDFGConvertible):
         # and so we can ensure the SDFG does not know any runtime info it shouldn't know. Remove with
         # the other parts of the workaround when possible.
         sdfg = dace.SDFG.from_json(
-            compile_workflow.translation.replace(
+            compile_workflow.translation.step.replace(
                 disable_itir_transforms=True, disable_field_origin_on_program_arguments=True
             )(gtir_stage).source_code
         )

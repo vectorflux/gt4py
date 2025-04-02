@@ -23,7 +23,40 @@ from gt4py.next.otf.languages import LanguageSettings
 from gt4py.next.program_processors.runners.dace import (
     gtir_sdfg,
     transformations as gtx_transformations,
+    utils as gtx_dace_utils,
 )
+from gt4py.next.type_system import type_specifications as ts
+
+
+def _find_constant_symbols(
+    ir: itir.Program, sdfg: dace.SDFG, leading_kind: common.DimensionKind
+) -> dict[str, int]:
+    constant_symbols: dict[str, int] = {}
+
+    for p in ir.params:
+        if isinstance(p.type, ts.FieldType):
+            dims = p.type.dims
+            if len(dims) == 0:
+                continue
+            elif len(dims) == 1:
+                dim_index = 0
+            elif len(dims) == 2:
+                dim_index = 0 if dims[1].kind == leading_kind else 1
+            else:
+                raise ValueError(f"Unsupported field with dims={dims}.")
+            stride_name = gtx_dace_utils.field_stride_symbol_name(p.id, dim_index)
+            constant_symbols[stride_name] = 1
+
+    for conn, desc in sdfg.arrays.items():
+        if gtx_dace_utils.is_connectivity_identifier(conn):
+            assert not desc.transient
+            if leading_kind == common.DimensionKind.HORIZONTAL:
+                stride_name = gtx_dace_utils.field_stride_symbol_name(conn, 1)
+            else:
+                stride_name = gtx_dace_utils.field_stride_symbol_name(conn, 0)
+            constant_symbols[stride_name] = 1
+
+    return constant_symbols
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,11 +99,13 @@ class DaCeTranslator(
                 if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
                 else common.DimensionKind.HORIZONTAL
             )
+            constant_symbols = _find_constant_symbols(ir, sdfg, leading_kind)
             gtx_transformations.gt_auto_optimize(
                 sdfg,
                 gpu=on_gpu,
                 gpu_block_size=dace.Config.get("compiler", "cuda", "default_block_size"),
                 leading_kind=leading_kind,
+                constant_symbols=constant_symbols,
                 assume_pointwise=True,
                 make_persistent=False,
             )

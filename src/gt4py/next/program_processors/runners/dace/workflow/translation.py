@@ -96,21 +96,22 @@ class DaCeTranslator(
         )
 
         if auto_opt:
-            leading_kind = (
-                common.DimensionKind.HORIZONTAL
-                if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
-                else common.DimensionKind.VERTICAL
-            )
-            constant_symbols = _find_constant_symbols(ir, sdfg, offset_provider_type)
-            gtx_transformations.gt_auto_optimize(
-                sdfg,
-                gpu=on_gpu,
-                gpu_block_size=dace.Config.get("compiler", "cuda", "default_block_size"),
-                leading_kind=leading_kind,
-                constant_symbols=constant_symbols,
-                assume_pointwise=True,
-                make_persistent=False,
-            )
+            # leading_kind = (
+            #     common.DimensionKind.HORIZONTAL
+            #     if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
+            #     else common.DimensionKind.VERTICAL
+            # )
+            # constant_symbols = _find_constant_symbols(ir, sdfg, offset_provider_type)
+            # gtx_transformations.gt_auto_optimize(
+            #     sdfg,
+            #     gpu=on_gpu,
+            #     gpu_block_size=dace.Config.get("compiler", "cuda", "default_block_size"),
+            #     leading_kind=leading_kind,
+            #     constant_symbols=constant_symbols,
+            #     assume_pointwise=True,
+            #     make_persistent=False,
+            # )
+            pass
         elif on_gpu:
             # We run simplify to bring the SDFG into a canonical form that the gpu transformations
             # can handle. This is a workaround for an issue with scalar expressions that are

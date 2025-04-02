@@ -134,16 +134,16 @@ def gt_simplify(
         #  effective there are some preparatory transformations that are run in DaCe
         #  simplify. So the GT4Py transformation is more like a clean up to handle
         #  the parts DaCe is not able to do.
-        # if "FuseStates" not in skip:
-        #     fuse_state_res = sdfg.apply_transformations_repeated(
-        #         [gtx_transformations.GT4PyStateFusion]
-        #     )
-        #     if fuse_state_res:
-        #         at_least_one_xtrans_run = True
-        #         result = result or {}
-        #         if "FuseStates" not in result:
-        #             result["FuseStates"] = 0
-        #         result["FuseStates"] += fuse_state_res
+        if "FuseStates" not in skip:
+            fuse_state_res = sdfg.apply_transformations_repeated(
+                [gtx_transformations.GT4PyStateFusion]
+            )
+            if fuse_state_res:
+                at_least_one_xtrans_run = True
+                result = result or {}
+                if "FuseStates" not in result:
+                    result["FuseStates"] = 0
+                result["FuseStates"] += fuse_state_res
 
         if "GT4PyDeadDataflowElimination" not in skip:
             eliminate_dead_dataflow_res = gtx_transformations.gt_eliminate_dead_dataflow(

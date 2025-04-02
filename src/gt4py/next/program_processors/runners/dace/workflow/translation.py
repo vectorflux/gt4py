@@ -15,7 +15,7 @@ import dace
 import factory
 
 from gt4py._core import definitions as core_defs
-from gt4py.next import common
+from gt4py.next import common, config
 from gt4py.next.iterator import ir as itir, transforms as itir_transforms
 from gt4py.next.otf import languages, stages, step_types, workflow
 from gt4py.next.otf.binding import interface
@@ -61,9 +61,17 @@ class DaCeTranslator(
         )
 
         if auto_opt:
+            leading_kind = (
+                common.DimensionKind.VERTICAL
+                if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
+                else common.DimensionKind.HORIZONTAL
+            )
             gtx_transformations.gt_auto_optimize(
                 sdfg,
                 gpu=on_gpu,
+                gpu_block_size=dace.Config.get("compiler", "cuda", "default_block_size"),
+                leading_kind=leading_kind,
+                assume_pointwise=True,
                 make_persistent=False,
             )
         elif on_gpu:

@@ -29,7 +29,10 @@ from gt4py.next.type_system import type_specifications as ts
 
 
 def _find_constant_symbols(
-    ir: itir.Program, sdfg: dace.SDFG, leading_kind: common.DimensionKind
+    ir: itir.Program,
+    sdfg: dace.SDFG,
+    leading_kind: common.DimensionKind,
+    offset_provider_type: common.OffsetProviderType,
 ) -> dict[str, int]:
     constant_symbols: dict[str, int] = {}
 
@@ -48,7 +51,7 @@ def _find_constant_symbols(
             constant_symbols[stride_name] = 1
 
     for conn, desc in sdfg.arrays.items():
-        if gtx_dace_utils.is_connectivity_identifier(conn):
+        if gtx_dace_utils.is_connectivity_identifier(conn, offset_provider_type):
             assert not desc.transient
             if leading_kind == common.DimensionKind.HORIZONTAL:
                 stride_name = gtx_dace_utils.field_stride_symbol_name(conn, 1)
@@ -86,9 +89,10 @@ class DaCeTranslator(
     ) -> dace.SDFG:
         if not self.disable_itir_transforms:
             ir = itir_transforms.apply_fieldview_transforms(ir, offset_provider=offset_provider)
+        offset_provider_type = common.offset_provider_to_type(offset_provider)
         sdfg = gtir_sdfg.build_sdfg_from_gtir(
             ir,
-            common.offset_provider_to_type(offset_provider),
+            offset_provider_type,
             column_axis,
             disable_field_origin_on_program_arguments=self.disable_field_origin_on_program_arguments,
         )
@@ -99,7 +103,7 @@ class DaCeTranslator(
                 if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
                 else common.DimensionKind.HORIZONTAL
             )
-            constant_symbols = _find_constant_symbols(ir, sdfg, leading_kind)
+            constant_symbols = _find_constant_symbols(ir, sdfg, leading_kind, offset_provider_type)
             gtx_transformations.gt_auto_optimize(
                 sdfg,
                 gpu=on_gpu,

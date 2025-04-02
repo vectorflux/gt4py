@@ -44,7 +44,7 @@ def _find_constant_symbols(
             elif len(dims) == 1:
                 dim_index = 0
             elif len(dims) == 2:
-                dim_index = 0 if dims[1].kind == leading_kind else 1
+                dim_index = 0 if dims[0].kind == leading_kind else 1
             else:
                 raise ValueError(f"Unsupported field with dims={dims}.")
             stride_name = gtx_dace_utils.field_stride_symbol_name(p.id, dim_index)
@@ -54,9 +54,9 @@ def _find_constant_symbols(
         if gtx_dace_utils.is_connectivity_identifier(conn, offset_provider_type):
             assert not desc.transient
             if leading_kind == common.DimensionKind.HORIZONTAL:
-                stride_name = gtx_dace_utils.field_stride_symbol_name(conn, 1)
-            else:
                 stride_name = gtx_dace_utils.field_stride_symbol_name(conn, 0)
+            else:
+                stride_name = gtx_dace_utils.field_stride_symbol_name(conn, 1)
             constant_symbols[stride_name] = 1
 
     return constant_symbols
@@ -99,9 +99,9 @@ class DaCeTranslator(
 
         if auto_opt:
             leading_kind = (
-                common.DimensionKind.VERTICAL
+                common.DimensionKind.HORIZONTAL
                 if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
-                else common.DimensionKind.HORIZONTAL
+                else common.DimensionKind.VERTICAL
             )
             constant_symbols = _find_constant_symbols(ir, sdfg, leading_kind, offset_provider_type)
             gtx_transformations.gt_auto_optimize(

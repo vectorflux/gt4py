@@ -8,9 +8,8 @@
 
 from __future__ import annotations
 
-import copy
 import dataclasses
-from typing import Any, Optional
+from typing import Any
 
 import dace
 import factory
@@ -22,15 +21,13 @@ from gt4py.next.otf.compilation import cache
 
 
 class CompiledDaceProgram(stages.ExtendedCompiledProgram):
-    sdfg: Optional[dace.SDFG]
     sdfg_program: dace.CompiledSDFG
 
     # Sorted list of SDFG arguments as they appear in program ABI and corresponding data type;
     # scalar arguments that are not used in the SDFG will not be present.
     sdfg_arglist: list[tuple[str, dace.dtypes.Data]]
 
-    def __init__(self, sdfg: dace.SDFG, program: dace.CompiledSDFG, implicit_domain: bool):
-        self.sdfg = sdfg
+    def __init__(self, program: dace.CompiledSDFG, implicit_domain: bool):
         self.sdfg_program = program
         self.implicit_domain = implicit_domain
         # `dace.CompiledSDFG.arglist()` returns an ordered dictionary that maps the argument
@@ -72,7 +69,6 @@ class DaCeCompiler(
         inp: stages.CompilableSource[languages.SDFG, languages.LanguageSettings, languages.Python],
     ) -> CompiledDaceProgram:
         sdfg = dace.SDFG.from_json(inp.program_source.source_code)
-        original_sdfg = copy.deepcopy(sdfg)
         sdfg.build_folder = cache.get_cache_folder(inp, self.cache_lifetime)
 
         with dace.config.temporary_config():
@@ -94,7 +90,7 @@ class DaCeCompiler(
                 dace.config.Config.set("compiler", "cpu", "args", value=compiler_args)
             sdfg_program = sdfg.compile(validate=False)
 
-        return CompiledDaceProgram(original_sdfg, sdfg_program, inp.program_source.implicit_domain)
+        return CompiledDaceProgram(sdfg_program, inp.program_source.implicit_domain)
 
 
 class DaCeCompilationStepFactory(factory.Factory):

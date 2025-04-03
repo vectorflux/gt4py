@@ -96,7 +96,7 @@ class DaCeTranslator(
         )
 
         if auto_opt:
-            leading_kind = (
+            unit_strides_kind = (
                 common.DimensionKind.HORIZONTAL
                 if config.UNSTRUCTURED_HORIZONTAL_HAS_UNIT_STRIDE
                 else common.DimensionKind.VERTICAL
@@ -106,7 +106,7 @@ class DaCeTranslator(
                 sdfg,
                 gpu=on_gpu,
                 gpu_block_size=dace.Config.get("compiler", "cuda", "default_block_size"),
-                leading_kind=leading_kind,
+                unit_strides_kind=unit_strides_kind,
                 constant_symbols=constant_symbols,
                 assume_pointwise=True,
                 make_persistent=False,

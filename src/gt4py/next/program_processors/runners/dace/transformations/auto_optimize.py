@@ -162,7 +162,7 @@ def gt_auto_optimize(
 
         # Configure the Maps:
         #  Will also perform the GPU transformation.
-        sdfg = _gt_auto_configure_maps(
+        sdfg = _gt_auto_configure_maps_and_strides(
             sdfg=sdfg,
             gpu=gpu,
             unit_strides_kind=unit_strides_kind,
@@ -174,11 +174,14 @@ def gt_auto_optimize(
         )
 
         # Transients
-        sdfg = _gt_auto_process_transients(
+        sdfg = _gt_auto_post_processing(
             sdfg=sdfg,
             gpu=gpu,
             make_persistent=make_persistent,
-            reuse_transients=True,
+            # TODO(phimuell): In general TU is a good idea, but it also reuses
+            #   transients scalars inside a Map scope, which I do not like. Thus
+            #   we should fix the transformation to avoid that.
+            reuse_transients=reuse_transients,
             validate=validate,
             validate_all=validate_all,
         )
@@ -356,7 +359,7 @@ def _gt_auto_process_dataflow_inside_maps(
     return sdfg
 
 
-def _gt_auto_configure_maps(
+def _gt_auto_configure_maps_and_strides(
     sdfg: dace.SDFG,
     gpu: bool,
     unit_strides_kind: Optional[gtx_common.DimensionKind],
@@ -366,12 +369,13 @@ def _gt_auto_configure_maps(
     validate: bool,
     validate_all: bool,
 ) -> dace.SDFG:
-    """Configure the Maps of the SDFG inplace.
+    """Configure the Maps and the strides of the SDFG inplace.
 
     Essentially the function will set the properties of the Map accordingly, most
     importantly the iteration order of the loops, to ensure that the unit stride
     is associated to the `x` dimension of a block (GPU) or the inner most loop-nest.
     Furthermore, it will also apply the GPU transformation.
+    It will also determine the strides of the transients.
 
     For a description of the arguments see the `gt_auto_optimize()` function.
     """
@@ -381,15 +385,25 @@ def _gt_auto_configure_maps(
             gtx_common.DimensionKind.HORIZONTAL if gpu else gtx_common.DimensionKind.VERTICAL
         )
     if unit_strides_kind is not None:
-        # NOTE: We can not use `unit_strides_dim` here, because the loop blocking
-        #   modifies the names of the outer Map parameter. However, since the kind
-        #   is at the end it can still be identified.
+        # It is not possible to support the `unit_strides_dim` argument of the
+        #  function, because `LoopBlocking` will change the name of the parameter
+        #  but it can still be identified by "kind".
         gtx_transformations.gt_set_iteration_order(
             sdfg=sdfg,
             unit_strides_kind=unit_strides_kind,
             validate=validate,
             validate_all=validate_all,
         )
+
+    # NOTE: We have to set the strides of transients before the non standard Memlets
+    #   get expanded, i.e. turned into Maps because no `cudaMemcpy*()` call exists,
+    #   which requires that the final strides are there. Furthermore, Memlet expansion
+    #   has to happen before the GPU block size is set. There are several possible
+    #   solution for that, of which none is really good. The one that is the least
+    #   bad thing is to set the strides of the transients here. The main downside
+    #   is that this and the `_gt_auto_post_processing()` function has these weird
+    #   names.
+    gtx_transformations.gt_change_transient_strides(sdfg, gpu=gpu)
 
     if gpu:
         # TODO(phimuell): The GPU function might modify the map iteration order.
@@ -409,7 +423,7 @@ def _gt_auto_configure_maps(
     return sdfg
 
 
-def _gt_auto_process_transients(
+def _gt_auto_post_processing(
     sdfg: dace.SDFG,
     gpu: bool,
     make_persistent: bool,
@@ -417,14 +431,11 @@ def _gt_auto_process_transients(
     validate: bool,
     validate_all: bool,
 ) -> dace.SDFG:
-    """Process the transients.
+    """Perform post processing on the SDFG.
 
-    This function must be called after the GPU transformation, which is run by the
-    `_gt_auto_configure_maps()` function.
+    Apply the finishing touch to the optimized SDFG.
     For a full description of the arguments see the `gt_auto_optimize()` function.
     """
-
-    gtx_transformations.gt_change_transient_strides(sdfg, gpu=gpu)
 
     if reuse_transients:
         # TODO(phimuell): Investigate if we should enable it, it may make things

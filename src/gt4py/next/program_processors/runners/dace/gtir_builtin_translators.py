@@ -18,13 +18,10 @@ from dace import subsets as dace_subsets
 from gt4py.next import common as gtx_common, utils as gtx_utils
 from gt4py.next.ffront import fbuiltins as gtx_fbuiltins
 from gt4py.next.iterator import ir as gtir
-from gt4py.next.iterator.ir_utils import (
-    common_pattern_matcher as cpm,
-    domain_utils,
-    ir_makers as im,
-)
+from gt4py.next.iterator.ir_utils import common_pattern_matcher as cpm, ir_makers as im
 from gt4py.next.program_processors.runners.dace import (
     gtir_dataflow,
+    gtir_domain,
     gtir_python_codegen,
     gtir_sdfg,
     gtir_sdfg_utils,
@@ -129,7 +126,7 @@ class FieldopData:
         return FieldopData(outer_node, self.gt_type, tuple(outer_origin))
 
     def get_local_view(
-        self, domain: FieldopDomain
+        self, domain: gtir_domain.FieldopDomain
     ) -> gtir_dataflow.IteratorExpr | gtir_dataflow.MemletExpr:
         """Helper method to access a field in local view, given the compute domain of a field operator."""
         if isinstance(self.gt_type, ts.ScalarType):
@@ -196,17 +193,6 @@ class FieldopData:
                 for i, stride in enumerate(outer_desc.strides)
             }
         )
-
-
-FieldopDomain: TypeAlias = list[
-    tuple[gtx_common.Dimension, dace.symbolic.SymbolicType, dace.symbolic.SymbolicType]
-]
-"""
-Domain of a field operator represented as a list of tuples with 3 elements:
- - dimension definition
- - symbolic expression for lower bound (inclusive)
- - symbolic expression for upper bound (exclusive)
-"""
 
 
 FieldopResult: TypeAlias = FieldopData | tuple[FieldopData | tuple, ...]
@@ -279,6 +265,7 @@ class PrimitiveTranslator(Protocol):
         sdfg: dace.SDFG,
         state: dace.SDFGState,
         sdfg_builder: gtir_sdfg.SDFGBuilder,
+        domain_parser: gtir_domain.GTIRDomainParser,
     ) -> FieldopResult:
         """Creates the dataflow subgraph representing a GTIR primitive function.
 
@@ -290,6 +277,7 @@ class PrimitiveTranslator(Protocol):
             sdfg: The SDFG where the primitive subgraph should be instantiated
             state: The SDFG state where the result of the primitive function should be made available
             sdfg_builder: The object responsible for visiting child nodes of the primitive node.
+            domain_parser:
 
         Returns:
             A list of data access nodes and the associated GT4Py data type, which provide
@@ -304,7 +292,8 @@ def _parse_fieldop_arg(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> (
     gtir_dataflow.IteratorExpr
     | gtir_dataflow.MemletExpr
@@ -312,7 +301,7 @@ def _parse_fieldop_arg(
 ):
     """Helper method to visit an expression passed as argument to a field operator."""
 
-    arg = sdfg_builder.visit(node, sdfg=sdfg, head_state=state)
+    arg = sdfg_builder.visit(node, domain_parser=domain_parser, sdfg=sdfg, head_state=state)
 
     if isinstance(arg, FieldopData):
         return arg.get_local_view(domain)
@@ -322,7 +311,8 @@ def _parse_fieldop_arg(
 
 
 def get_field_layout(
-    domain: FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> tuple[list[gtx_common.Dimension], list[dace.symbolic.SymExpr], list[dace.symbolic.SymExpr]]:
     """
     Parse the field operator domain and generates the shape of the result field.
@@ -349,7 +339,7 @@ def get_field_layout(
     # after introduction of concat_where, the strict order of lower and upper bounds is not guaranteed
     domain_ubs = tuple(
         [
-            dace.symbolic.pystr_to_symbolic(f"max({lb}, {ub})")
+            domain_parser.simplify(dace.symbolic.pystr_to_symbolic(f"max({lb}, {ub})"))
             for lb, ub in zip(domain_lbs, domain_ubs, strict=True)
         ]
     )
@@ -361,7 +351,8 @@ def _create_field_operator_impl(
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     sdfg: dace.SDFG,
     state: dace.SDFGState,
-    domain: FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
     output_edge: gtir_dataflow.DataflowOutputEdge,
     output_type: ts.FieldType,
     map_exit: dace.nodes.MapExit,
@@ -388,7 +379,7 @@ def _create_field_operator_impl(
     dataflow_output_desc = output_edge.result.dc_node.desc(sdfg)
 
     # the memory layout of the output field follows the field operator compute domain
-    field_dims, field_origin, field_shape = get_field_layout(domain)
+    field_dims, field_origin, field_shape = get_field_layout(domain, domain_parser)
     field_indices = get_domain_indices(field_dims, field_origin)
     field_subset = dace_subsets.Range.from_indices(field_indices)
 
@@ -427,7 +418,8 @@ def _create_field_operator_impl(
 def _create_field_operator(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
-    domain: FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
     node_type: ts.FieldType | ts.TupleType,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     input_edges: Iterable[gtir_dataflow.DataflowInputEdge],
@@ -474,54 +466,23 @@ def _create_field_operator(
         )
         output_edge = output_tree[0]
         return _create_field_operator_impl(
-            sdfg_builder, sdfg, state, domain, output_edge, node_type, map_exit
+            sdfg_builder, sdfg, state, domain, domain_parser, output_edge, node_type, map_exit
         )
     else:
         # handle tuples of fields
         output_symbol_tree = gtir_sdfg_utils.make_symbol_tree("x", node_type)
         return gtx_utils.tree_map(
             lambda output_edge, output_sym: _create_field_operator_impl(
-                sdfg_builder, sdfg, state, domain, output_edge, output_sym.type, map_exit
+                sdfg_builder,
+                sdfg,
+                state,
+                domain,
+                domain_parser,
+                output_edge,
+                output_sym.type,
+                map_exit,
             )
         )(output_tree, output_symbol_tree)
-
-
-def extract_domain(node: gtir.Node) -> FieldopDomain:
-    """
-    Visits the domain of a field operator and returns a list of dimensions and
-    the corresponding lower and upper bounds. The returned lower bound is inclusive,
-    the upper bound is exclusive: [lower_bound, upper_bound[
-    """
-
-    domain = []
-
-    if cpm.is_call_to(node, ("cartesian_domain", "unstructured_domain")):
-        for named_range in node.args:
-            assert cpm.is_call_to(named_range, "named_range")
-            assert len(named_range.args) == 3
-            axis = named_range.args[0]
-            assert isinstance(axis, gtir.AxisLiteral)
-            lower_bound, upper_bound = (
-                gtir_sdfg_utils.get_symbolic(arg) for arg in named_range.args[1:3]
-            )
-            dim = gtx_common.Dimension(axis.value, axis.kind)
-            domain.append((dim, lower_bound, upper_bound))
-
-    elif isinstance(node, domain_utils.SymbolicDomain):
-        assert str(node.grid_type) in {"cartesian_domain", "unstructured_domain"}
-        for dim, drange in node.ranges.items():
-            domain.append(
-                (
-                    dim,
-                    gtir_sdfg_utils.get_symbolic(drange.start),
-                    gtir_sdfg_utils.get_symbolic(drange.stop),
-                )
-            )
-
-    else:
-        raise ValueError(f"Invalid domain {node}.")
-
-    return domain
 
 
 def translate_as_fieldop(
@@ -529,6 +490,7 @@ def translate_as_fieldop(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     """
     Generates the dataflow subgraph for the `as_fieldop` builtin function.
@@ -552,7 +514,7 @@ def translate_as_fieldop(
     fieldop_expr, domain_expr = fun_node.args
 
     if cpm.is_call_to(fieldop_expr, "scan"):
-        return translate_scan(node, sdfg, state, sdfg_builder)
+        return translate_scan(node, sdfg, state, sdfg_builder, domain_parser)
 
     if cpm.is_ref_to(fieldop_expr, "deref"):
         # Special usage of 'deref' as argument to fieldop expression, to pass a scalar
@@ -571,10 +533,13 @@ def translate_as_fieldop(
         )
 
     # parse the domain of the field operator
-    domain = extract_domain(domain_expr)
+    domain = gtir_domain.extract_domain(domain_expr)
 
     # visit the list of arguments to be passed to the lambda expression
-    fieldop_args = [_parse_fieldop_arg(arg, sdfg, state, sdfg_builder, domain) for arg in node.args]
+    fieldop_args = [
+        _parse_fieldop_arg(arg, sdfg, state, sdfg_builder, domain, domain_parser)
+        for arg in node.args
+    ]
 
     # represent the field operator as a mapped tasklet graph, which will range over the field domain
     input_edges, output_edges = gtir_dataflow.translate_lambda_to_dataflow(
@@ -582,7 +547,7 @@ def translate_as_fieldop(
     )
 
     return _create_field_operator(
-        sdfg, state, domain, node.type, sdfg_builder, input_edges, output_edges
+        sdfg, state, domain, domain_parser, node.type, sdfg_builder, input_edges, output_edges
     )
 
 
@@ -605,21 +570,21 @@ def _make_concat_field_slice(
     origin = tuple([*f.origin[:concat_dim_index], concat_dim_origin, *f.origin[concat_dim_index:]])
     shape = tuple([*f_desc.shape[:concat_dim_index], 1, *f_desc.shape[concat_dim_index:]])
     strides = tuple([*f_desc.strides[:concat_dim_index], 1, *f_desc.strides[concat_dim_index:]])
-    slice, slice_desc = sdfg.add_view(
+    fslice, fslice_desc = sdfg.add_view(
         f"view_{f.dc_node.data}", shape, f_desc.dtype, strides=strides
     )
-    slice_node = state.add_access(slice)
+    fslice_node = state.add_access(fslice)
     state.add_nedge(
         f.dc_node,
-        slice_node,
+        fslice_node,
         dace.Memlet(
             data=f.dc_node.data,
             subset=dace_subsets.Range.from_array(f_desc),
-            other_subset=dace_subsets.Range.from_array(slice_desc),
+            other_subset=dace_subsets.Range.from_array(fslice_desc),
         ),
     )
-    fslice = FieldopData(slice_node, ts.FieldType(dims=dims, dtype=f.gt_type.dtype), origin)
-    return fslice, slice_desc
+    fnew = FieldopData(fslice_node, ts.FieldType(dims=dims, dtype=f.gt_type.dtype), origin)
+    return fnew, fslice_desc
 
 
 def _make_concat_scalar_broadcast(
@@ -627,7 +592,8 @@ def _make_concat_scalar_broadcast(
     state: dace.SDFGState,
     inp: FieldopData,
     inp_desc: dace.data.Array,
-    domain: FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
     concat_dim_index: int,
 ) -> tuple[FieldopData, dace.data.Array]:
     """
@@ -636,7 +602,7 @@ def _make_concat_scalar_broadcast(
     """
     assert isinstance(inp.gt_type, ts.FieldType)
     assert len(inp.gt_type.dims) == 1
-    out_dims, out_origin, out_shape = get_field_layout(domain)
+    out_dims, out_origin, out_shape = get_field_layout(domain, domain_parser)
     out_type = ts.FieldType(dims=out_dims, dtype=inp.gt_type.dtype)
 
     out_name, out_desc = sdfg.add_temp_transient(out_shape, inp_desc.dtype)
@@ -673,6 +639,7 @@ def translate_concat_where(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     """
     Lowers a `concat_where` expression to a dataflow where two memlets write
@@ -685,7 +652,7 @@ def translate_concat_where(
     # we extract the dimension along which we need to concatenate the field arguments,
     # and determine whether the true branch argument should be on the lower or upper
     # range with respect to the boundary value.
-    mask_domain = extract_domain(node.args[0])
+    mask_domain = gtir_domain.extract_domain(node.args[0])
     if len(mask_domain) != 1:
         raise NotImplementedError("Expected `concat_where` along single axis.")
     concat_dim, mask_lower_bound, mask_upper_bound = mask_domain[0]
@@ -701,7 +668,7 @@ def translate_concat_where(
         assert tb_data_desc.dtype == fb_data_desc.dtype
 
         tb_domain, fb_domain = (
-            extract_domain(domain) for domain in [tb_node_domain, fb_node_domain]
+            gtir_domain.extract_domain(domain) for domain in [tb_node_domain, fb_node_domain]
         )
 
         # expect unbound range in the concat domain expression on lower or upper range
@@ -717,8 +684,8 @@ def translate_concat_where(
             raise ValueError(f"Unexpected concat mask {node.args[0]}.")
 
         # we use the concat domain, stored in the annex, as the domain of output field
-        output_domain = extract_domain(node_domain)
-        output_dims, output_origin, output_shape = get_field_layout(output_domain)
+        output_domain = gtir_domain.extract_domain(node_domain)
+        output_dims, output_origin, output_shape = get_field_layout(output_domain, domain_parser)
         concat_dim_index = output_dims.index(concat_dim)
 
         # in case one of the arguments is a scalar value, we convert it to a single-element
@@ -761,11 +728,11 @@ def translate_concat_where(
             is_upper_slice = True
         elif len(lower.gt_type.dims) == 1:
             lower, lower_desc = _make_concat_scalar_broadcast(
-                sdfg, state, lower, lower_desc, lower_domain, concat_dim_index
+                sdfg, state, lower, lower_desc, lower_domain, domain_parser, concat_dim_index
             )
         elif len(upper.gt_type.dims) == 1:
             upper, upper_desc = _make_concat_scalar_broadcast(
-                sdfg, state, upper, upper_desc, upper_domain, concat_dim_index
+                sdfg, state, upper, upper_desc, upper_domain, domain_parser, concat_dim_index
             )
         elif lower.gt_type.dims != upper.gt_type.dims:
             raise NotImplementedError(
@@ -780,8 +747,10 @@ def translate_concat_where(
         lower_range_1 = (
             (lower_range_0 + 1)
             if is_lower_slice
-            else dace.symbolic.pystr_to_symbolic(
-                f"max({lower_range_0}, {lower_domain[concat_dim_index][2]})"
+            else domain_parser.simplify(
+                dace.symbolic.pystr_to_symbolic(
+                    f"max({lower_range_0}, {lower_domain[concat_dim_index][2]})"
+                )
             )
         )
         lower_range_size = lower_range_1 - lower_range_0
@@ -790,8 +759,10 @@ def translate_concat_where(
         upper_range_1 = (
             (upper_range_0 + 1)
             if is_upper_slice
-            else dace.symbolic.pystr_to_symbolic(
-                f"max({upper_range_0}, {upper_domain[concat_dim_index][2]})"
+            else domain_parser.simplify(
+                dace.symbolic.pystr_to_symbolic(
+                    f"max({upper_range_0}, {upper_domain[concat_dim_index][2]})"
+                )
             )
         )
         upper_range_size = upper_range_1 - upper_range_0
@@ -877,7 +848,10 @@ def translate_concat_where(
         return FieldopData(output_node, lower.gt_type, origin=tuple(output_origin))
 
     # we visit the field arguments for the true and false branch
-    tb, fb = (sdfg_builder.visit(node.args[i], sdfg=sdfg, head_state=state) for i in [1, 2])
+    tb, fb = (
+        sdfg_builder.visit(node.args[i], domain_parser=domain_parser, sdfg=sdfg, head_state=state)
+        for i in [1, 2]
+    )
 
     return (
         concatenate_inputs(
@@ -895,6 +869,7 @@ def _construct_if_branch_output(
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     domain: gtir.Expr,
+    domain_parser: gtir_domain.GTIRDomainParser,
     sym: gtir.Sym,
     true_br: FieldopData,
     false_br: FieldopData,
@@ -915,7 +890,7 @@ def _construct_if_branch_output(
 
     assert isinstance(out_type, ts.FieldType)
     assert isinstance(sym.type, ts.FieldType)
-    dims, origin, shape = get_field_layout(extract_domain(domain))
+    dims, origin, shape = get_field_layout(gtir_domain.extract_domain(domain), domain_parser)
     assert dims == out_type.dims
 
     if isinstance(out_type.dtype, ts.ScalarType):
@@ -994,6 +969,7 @@ def translate_if(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     """Generates the dataflow subgraph for the `if_` builtin function."""
     assert cpm.is_call_to(node, "if_")
@@ -1033,11 +1009,13 @@ def translate_if(
 
     true_br_result = sdfg_builder.visit(
         true_expr,
+        domain_parser=domain_parser,
         sdfg=sdfg,
         head_state=true_state,
     )
     false_br_result = sdfg_builder.visit(
         false_expr,
+        domain_parser=domain_parser,
         sdfg=sdfg,
         head_state=false_state,
     )
@@ -1062,6 +1040,7 @@ def translate_if(
                 state,
                 sdfg_builder,
                 domain,
+                domain_parser,
                 sym,
                 true_br,
                 false_br,
@@ -1084,6 +1063,7 @@ def translate_if(
             state,
             sdfg_builder,
             node.annex.domain,
+            domain_parser,
             im.sym("x", node.type),
             true_br_result,
             false_br_result,
@@ -1099,6 +1079,7 @@ def translate_index(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     """
     Lowers the `index` builtin function to a mapped tasklet that writes the dimension
@@ -1109,7 +1090,7 @@ def translate_index(
     assert isinstance(node.type, ts.FieldType)
 
     assert "domain" in node.annex
-    domain = extract_domain(node.annex.domain)
+    domain = gtir_domain.extract_domain(node.annex.domain)
     assert len(domain) == 1
     dim, _, _ = domain[0]
     dim_index = gtir_sdfg_utils.get_map_variable(dim)
@@ -1140,7 +1121,7 @@ def translate_index(
     ]
     output_edge = gtir_dataflow.DataflowOutputEdge(state, index_value)
     return _create_field_operator(
-        sdfg, state, domain, node.type, sdfg_builder, input_edges, (output_edge,)
+        sdfg, state, domain, domain_parser, node.type, sdfg_builder, input_edges, (output_edge,)
     )
 
 
@@ -1211,6 +1192,7 @@ def translate_literal(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     """Generates the dataflow subgraph for a `ir.Literal` node."""
     assert isinstance(node, gtir.Literal)
@@ -1226,11 +1208,13 @@ def translate_make_tuple(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     assert cpm.is_call_to(node, "make_tuple")
     return tuple(
         sdfg_builder.visit(
             arg,
+            domain_parser=domain_parser,
             sdfg=sdfg,
             head_state=state,
         )
@@ -1243,6 +1227,7 @@ def translate_tuple_get(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     assert cpm.is_call_to(node, "tuple_get")
     assert len(node.args) == 2
@@ -1254,6 +1239,7 @@ def translate_tuple_get(
 
     data_nodes = sdfg_builder.visit(
         node.args[1],
+        domain_parser=domain_parser,
         sdfg=sdfg,
         head_state=state,
     )
@@ -1273,6 +1259,7 @@ def translate_scalar_expr(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     assert isinstance(node, gtir.FunCall)
     assert isinstance(node.type, ts.ScalarType)
@@ -1297,6 +1284,7 @@ def translate_scalar_expr(
             # a scalar data container, which will be connected to the tasklet
             arg = sdfg_builder.visit(
                 arg_expr,
+                domain_parser=domain_parser,
                 sdfg=sdfg,
                 head_state=state,
             )
@@ -1348,6 +1336,7 @@ def translate_symbol_ref(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> FieldopResult:
     """Generates the dataflow subgraph for a `ir.SymRef` node."""
     assert isinstance(node, gtir.SymRef)

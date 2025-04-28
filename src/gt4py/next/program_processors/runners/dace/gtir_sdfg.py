@@ -31,6 +31,7 @@ from gt4py.next.iterator.transforms import prune_casts as ir_prune_casts, symbol
 from gt4py.next.iterator.type_system import inference as gtir_type_inference
 from gt4py.next.program_processors.runners.dace import (
     gtir_builtin_translators,
+    gtir_domain,
     gtir_sdfg_utils,
     transformations as gtx_transformations,
     utils as gtx_dace_utils,
@@ -201,7 +202,7 @@ def _collect_symbols_in_domain_expressions(
 
 
 def _make_access_index_for_field(
-    domain: gtir_builtin_translators.FieldopDomain, data: gtir_builtin_translators.FieldopData
+    domain: gtir_domain.FieldopDomain, data: gtir_builtin_translators.FieldopData
 ) -> dace.subsets.Range:
     """Helper method to build a memlet subset of a field over the given domain."""
     # convert domain expression to dictionary to ease access to the dimensions,
@@ -305,7 +306,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         return self.global_symbols[symbol_name]
 
     def is_column_axis(self, dim: gtx_common.Dimension) -> bool:
-        assert self.column_axis
+        assert self.column_axis is not None
         return dim == self.column_axis
 
     def setup_nested_context(
@@ -473,7 +474,12 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         raise NotImplementedError("Temporaries not supported yet by GTIR DaCe backend.")
 
     def _visit_expression(
-        self, node: gtir.Expr, sdfg: dace.SDFG, head_state: dace.SDFGState, use_temp: bool = True
+        self,
+        node: gtir.Expr,
+        domain_parser: gtir_domain.GTIRDomainParser,
+        sdfg: dace.SDFG,
+        head_state: dace.SDFGState,
+        use_temp: bool = True,
     ) -> list[gtir_builtin_translators.FieldopData]:
         """
         Specialized visit method for fieldview expressions.
@@ -484,7 +490,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         Returns:
             A list of array nodes containing the result fields.
         """
-        result = self.visit(node, sdfg=sdfg, head_state=head_state)
+        result = self.visit(node, domain_parser=domain_parser, sdfg=sdfg, head_state=head_state)
 
         # sanity check: each statement should preserve the property of single exit state (aka head state),
         # i.e. eventually only introduce internal branches, and keep the same head state
@@ -631,14 +637,19 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
           The SDFG head state, eventually updated if the target write requires a new state.
         """
 
-        source_fields = self._visit_expression(stmt.expr, sdfg, state)
+        # visit the domain expression
+        domain = gtir_domain.extract_domain(stmt.domain)
+        domain_parser = gtir_domain.GTIRDomainParser(domain)
+
+        source_fields = self._visit_expression(stmt.expr, domain_parser, sdfg, state)
 
         # the target expression could be a `SymRef` to an output node or a `make_tuple` expression
         # in case the statement returns more than one field
-        target_fields = self._visit_expression(stmt.target, sdfg, state, use_temp=False)
+        target_fields = self._visit_expression(
+            stmt.target, domain_parser, sdfg, state, use_temp=False
+        )
 
-        # visit the domain expression
-        domain = gtir_builtin_translators.extract_domain(stmt.domain)
+        # TODO(edopao): add constraint on non-empty domain
 
         expr_input_args = {
             sym_id
@@ -689,26 +700,40 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
     def visit_FunCall(
         self,
         node: gtir.FunCall,
+        domain_parser: gtir_domain.GTIRDomainParser,
         sdfg: dace.SDFG,
         head_state: dace.SDFGState,
     ) -> gtir_builtin_translators.FieldopResult:
         # use specialized dataflow builder classes for each builtin function
         if cpm.is_call_to(node, "concat_where"):
-            return gtir_builtin_translators.translate_concat_where(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_concat_where(
+                node, sdfg, head_state, self, domain_parser
+            )
         elif cpm.is_call_to(node, "if_"):
-            return gtir_builtin_translators.translate_if(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_if(
+                node, sdfg, head_state, self, domain_parser
+            )
         elif cpm.is_call_to(node, "index"):
-            return gtir_builtin_translators.translate_index(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_index(
+                node, sdfg, head_state, self, domain_parser
+            )
         elif cpm.is_call_to(node, "make_tuple"):
-            return gtir_builtin_translators.translate_make_tuple(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_make_tuple(
+                node, sdfg, head_state, self, domain_parser
+            )
         elif cpm.is_call_to(node, "tuple_get"):
-            return gtir_builtin_translators.translate_tuple_get(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_tuple_get(
+                node, sdfg, head_state, self, domain_parser
+            )
         elif cpm.is_applied_as_fieldop(node):
-            return gtir_builtin_translators.translate_as_fieldop(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_as_fieldop(
+                node, sdfg, head_state, self, domain_parser
+            )
         elif isinstance(node.fun, gtir.Lambda):
             lambda_args = [
                 self.visit(
                     arg,
+                    domain_parser=domain_parser,
                     sdfg=sdfg,
                     head_state=head_state,
                 )
@@ -717,18 +742,22 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
 
             return self.visit(
                 node.fun,
+                domain_parser=domain_parser,
                 sdfg=sdfg,
                 head_state=head_state,
                 args=lambda_args,
             )
         elif isinstance(node.type, ts.ScalarType):
-            return gtir_builtin_translators.translate_scalar_expr(node, sdfg, head_state, self)
+            return gtir_builtin_translators.translate_scalar_expr(
+                node, sdfg, head_state, self, domain_parser
+            )
         else:
             raise NotImplementedError(f"Unexpected 'FunCall' expression ({node}).")
 
     def visit_Lambda(
         self,
         node: gtir.Lambda,
+        domain_parser: gtir_domain.GTIRDomainParser,
         sdfg: dace.SDFG,
         head_state: dace.SDFGState,
         args: Sequence[gtir_builtin_translators.FieldopResult],
@@ -772,6 +801,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         nstate = nsdfg.add_state("lambda")
         lambda_result = lambda_translator.visit(
             node.expr,
+            domain_parser=domain_parser,
             sdfg=nsdfg,
             head_state=nstate,
         )
@@ -912,18 +942,24 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
     def visit_Literal(
         self,
         node: gtir.Literal,
+        domain_parser: gtir_domain.GTIRDomainParser,
         sdfg: dace.SDFG,
         head_state: dace.SDFGState,
     ) -> gtir_builtin_translators.FieldopResult:
-        return gtir_builtin_translators.translate_literal(node, sdfg, head_state, self)
+        return gtir_builtin_translators.translate_literal(
+            node, sdfg, head_state, self, domain_parser
+        )
 
     def visit_SymRef(
         self,
         node: gtir.SymRef,
+        domain_parser: gtir_domain.GTIRDomainParser,
         sdfg: dace.SDFG,
         head_state: dace.SDFGState,
     ) -> gtir_builtin_translators.FieldopResult:
-        return gtir_builtin_translators.translate_symbol_ref(node, sdfg, head_state, self)
+        return gtir_builtin_translators.translate_symbol_ref(
+            node, sdfg, head_state, self, domain_parser
+        )
 
 
 def _remove_field_origin_symbols(ir: gtir.Program, sdfg: dace.SDFG) -> None:

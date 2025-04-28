@@ -34,6 +34,7 @@ from gt4py.next.iterator.ir_utils import common_pattern_matcher as cpm, ir_maker
 from gt4py.next.program_processors.runners.dace import (
     gtir_builtin_translators as gtir_translators,
     gtir_dataflow,
+    gtir_domain,
     gtir_sdfg,
     gtir_sdfg_utils,
 )
@@ -49,7 +50,7 @@ def _parse_scan_fieldop_arg(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: gtir_translators.FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
 ) -> gtir_dataflow.MemletExpr | tuple[gtir_dataflow.MemletExpr | tuple[Any, ...], ...]:
     """Helper method to visit an expression passed as argument to a scan field operator.
 
@@ -85,7 +86,8 @@ def _create_scan_field_operator_impl(
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     sdfg: dace.SDFG,
     state: dace.SDFGState,
-    domain: gtir_translators.FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
     output_edge: gtir_dataflow.DataflowOutputEdge,
     output_type: ts.FieldType,
     map_exit: dace.nodes.MapExit,
@@ -109,7 +111,7 @@ def _create_scan_field_operator_impl(
     assert isinstance(dataflow_output_desc, dace.data.Array)
 
     # the memory layout of the output field follows the field operator compute domain
-    field_dims, field_origin, field_shape = gtir_translators.get_field_layout(domain)
+    field_dims, field_origin, field_shape = gtir_translators.get_field_layout(domain, domain_parser)
     field_indices = gtir_translators.get_domain_indices(field_dims, field_origin)
     field_subset = dace_subsets.Range.from_indices(field_indices)
 
@@ -175,7 +177,8 @@ def _create_scan_field_operator_impl(
 def _create_scan_field_operator(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
-    domain: gtir_translators.FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
     node_type: ts.FieldType | ts.TupleType,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     input_edges: Iterable[gtir_dataflow.DataflowInputEdge],
@@ -194,7 +197,7 @@ def _create_scan_field_operator(
     Refer to `gtir_builtin_translators._create_field_operator()` for the
     description of function arguments and return values.
     """
-    domain_dims, _, _ = gtir_translators.get_field_layout(domain)
+    domain_dims, _, _ = gtir_translators.get_field_layout(domain, domain_parser)
 
     # create a map scope to execute the `LoopRegion` over the horizontal domain
     if len(domain_dims) == 1:
@@ -225,7 +228,7 @@ def _create_scan_field_operator(
     if isinstance(node_type, ts.FieldType):
         assert isinstance(output_tree, gtir_dataflow.DataflowOutputEdge)
         return _create_scan_field_operator_impl(
-            sdfg_builder, sdfg, state, domain, output_tree, node_type, map_exit
+            sdfg_builder, sdfg, state, domain, domain_parser, output_tree, node_type, map_exit
         )
     else:
         # handle tuples of fields
@@ -239,6 +242,7 @@ def _create_scan_field_operator(
                     sdfg,
                     state,
                     domain,
+                    domain_parser,
                     output_edge,
                     output_sym.type,
                     map_exit,
@@ -266,7 +270,7 @@ def _lower_lambda_to_nested_sdfg(
     lambda_node: gtir.Lambda,
     sdfg: dace.SDFG,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: gtir_translators.FieldopDomain,
+    domain: gtir_domain.FieldopDomain,
     init_data: gtir_translators.FieldopResult,
     lambda_symbols: dict[str, ts.DataType],
     scan_forward: bool,
@@ -537,6 +541,7 @@ def translate_scan(
     sdfg: dace.SDFG,
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> gtir_translators.FieldopResult:
     """
     Generates the dataflow subgraph for the `as_fieldop` builtin with a scan operator.
@@ -560,7 +565,7 @@ def translate_scan(
     assert cpm.is_call_to(scan_expr, "scan")
 
     # parse the domain of the scan field operator
-    domain = gtir_translators.extract_domain(domain_expr)
+    domain = gtir_domain.extract_domain(domain_expr)
 
     # parse scan parameters
     assert len(scan_expr.args) == 3
@@ -669,5 +674,12 @@ def translate_scan(
 
     # we call a helper method to create a map scope that will compute the entire field
     return _create_scan_field_operator(
-        sdfg, state, domain, node.type, sdfg_builder, lambda_input_edges, lambda_output_tree
+        sdfg,
+        state,
+        domain,
+        domain_parser,
+        node.type,
+        sdfg_builder,
+        lambda_input_edges,
+        lambda_output_tree,
     )

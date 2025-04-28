@@ -51,6 +51,7 @@ def _parse_scan_fieldop_arg(
     state: dace.SDFGState,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
 ) -> gtir_dataflow.MemletExpr | tuple[gtir_dataflow.MemletExpr | tuple[Any, ...], ...]:
     """Helper method to visit an expression passed as argument to a scan field operator.
 
@@ -73,7 +74,7 @@ def _parse_scan_fieldop_arg(
             arg_expr.field, arg_expr.gt_dtype, arg_expr.get_memlet_subset(sdfg)
         )
 
-    arg = sdfg_builder.visit(node, sdfg=sdfg, head_state=state)
+    arg = sdfg_builder.visit(node, domain_parser=domain_parser, sdfg=sdfg, head_state=state)
 
     if isinstance(arg, gtir_translators.FieldopData):
         return _parse_fieldop_arg_impl(arg)
@@ -271,6 +272,7 @@ def _lower_lambda_to_nested_sdfg(
     sdfg: dace.SDFG,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     domain: gtir_domain.FieldopDomain,
+    domain_parser: gtir_domain.GTIRDomainParser,
     init_data: gtir_translators.FieldopResult,
     lambda_symbols: dict[str, ts.DataType],
     scan_forward: bool,
@@ -412,7 +414,9 @@ def _lower_lambda_to_nested_sdfg(
 
     # inside the 'compute' state, visit the list of arguments to be passed to the stencil
     stencil_args = [
-        _parse_scan_fieldop_arg(im.ref(p.id), nsdfg, compute_state, lambda_translator, domain)
+        _parse_scan_fieldop_arg(
+            im.ref(p.id), nsdfg, compute_state, lambda_translator, domain, domain_parser
+        )
         for p in lambda_node.params
     ]
     # stil inside the 'compute' state, generate the dataflow representing the stencil
@@ -582,7 +586,9 @@ def translate_scan(
     # params[2]: the expression that computes the value for scan initialization
     init_expr = scan_expr.args[2]
     # visit the initialization value of the scan expression
-    init_data = sdfg_builder.visit(init_expr, sdfg=sdfg, head_state=state)
+    init_data = sdfg_builder.visit(
+        init_expr, domain_parser=domain_parser, sdfg=sdfg, head_state=state
+    )
     # extract type definition of the scan carry
     scan_carry_type = (
         init_data.gt_type
@@ -606,6 +612,7 @@ def translate_scan(
         sdfg,
         sdfg_builder,
         domain,
+        domain_parser,
         init_data,
         lambda_symbols,
         scan_forward,
@@ -615,7 +622,10 @@ def translate_scan(
     # visit the arguments to be passed to the lambda expression
     # this must be executed before visiting the lambda expression, in order to populate
     # the data descriptor with the correct field domain offsets for field arguments
-    lambda_args = [sdfg_builder.visit(arg, sdfg=sdfg, head_state=state) for arg in node.args]
+    lambda_args = [
+        sdfg_builder.visit(arg, domain_parser=domain_parser, sdfg=sdfg, head_state=state)
+        for arg in node.args
+    ]
     lambda_args_mapping = [
         (im.sym(_scan_input_name(scan_carry), scan_carry_type), init_data),
     ] + [

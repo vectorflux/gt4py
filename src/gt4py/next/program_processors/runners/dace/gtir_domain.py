@@ -8,31 +8,15 @@
 
 from __future__ import annotations
 
-import abc
-import dataclasses
-from typing import TYPE_CHECKING, Any, Final, Iterable, Optional, Protocol, Sequence, TypeAlias
+from typing import TypeAlias
 
 import dace
-from dace import subsets as dace_subsets
 import sympy
 
-from gt4py.next import common as gtx_common, utils as gtx_utils
-from gt4py.next.ffront import fbuiltins as gtx_fbuiltins
+from gt4py.next import common as gtx_common
 from gt4py.next.iterator import ir as gtir
-from gt4py.next.iterator.ir_utils import (
-    common_pattern_matcher as cpm,
-    domain_utils,
-    ir_makers as im,
-)
-from gt4py.next.program_processors.runners.dace import (
-    gtir_dataflow,
-    gtir_python_codegen,
-    gtir_sdfg,
-    gtir_sdfg_utils,
-    utils as gtx_dace_utils,
-)
-from gt4py.next.program_processors.runners.dace.gtir_scan_translator import translate_scan
-from gt4py.next.type_system import type_info as ti, type_specifications as ts
+from gt4py.next.iterator.ir_utils import common_pattern_matcher as cpm, domain_utils
+from gt4py.next.program_processors.runners.dace import gtir_sdfg_utils
 
 
 FieldopDomain: TypeAlias = list[
@@ -85,15 +69,15 @@ def extract_domain(node: gtir.Node) -> FieldopDomain:
 
 
 class GTIRDomainParser:
+    domain_constraints: set[
+        tuple[dace.symbolic.SymbolicType, dace.symbolic.SymbolicType, sympy.Basic]
+    ]
 
-    domain_constraints: set[tuple[dace.symbolic.SymbolicType, dace.symbolic.SymbolicType, sympy.Basic]]
-    
     def __init__(self, domain: FieldopDomain):
         self.domain_constraints = {
-            (lb, ub, sympy.var(f"{dim.value}_size", positive=True))
-            for dim, lb, ub in domain
+            (lb, ub, sympy.var(f"{dim.value}_size", positive=True)) for dim, lb, ub in domain
         }
-            
+
     def simplify(self, expr: dace.symbolic.SymbolicType) -> dace.symbolic.SymbolicType:
         for lb, ub, size in self.domain_constraints:
             expr = expr.subs(lb, ub - size).subs(size, ub - lb)

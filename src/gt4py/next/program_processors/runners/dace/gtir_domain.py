@@ -29,6 +29,23 @@ Domain of a field operator represented as a list of tuples with 3 elements:
 """
 
 
+class GTIRDomainParser:
+    domain_constraints: set[
+        tuple[dace.symbolic.SymbolicType, dace.symbolic.SymbolicType, sympy.Basic]
+    ]
+
+    def __init__(self, domain: DomainRange):
+        self.domain_constraints = {
+            (r[0], r[1] + r[2], sympy.var(f"__gtir_{dim.value}_size", integer=True, negative=False))
+            for dim, r in domain
+        }
+
+    def simplify(self, expr: dace.symbolic.SymbolicType) -> dace.symbolic.SymbolicType:
+        for lb, ub, size in self.domain_constraints:
+            expr = expr.subs(lb, ub - size).subs(size, ub - lb)
+        return expr
+
+
 def extract_domain(node: gtir.Node) -> DomainRange:
     """
     Visits the domain of a field operator and returns a list of dimensions and
@@ -66,18 +83,39 @@ def extract_domain(node: gtir.Node) -> DomainRange:
     return list(zip(domain_dims, dace_subsets.Range(domain_range), strict=True))
 
 
-class GTIRDomainParser:
-    domain_constraints: set[
-        tuple[dace.symbolic.SymbolicType, dace.symbolic.SymbolicType, sympy.Basic]
-    ]
+def get_field_layout(
+    domain: DomainRange,
+    domain_parser: GTIRDomainParser,
+) -> tuple[list[gtx_common.Dimension], list[dace.symbolic.SymExpr], list[dace.symbolic.SymExpr]]:
+    """
+    Parse the field operator domain and generates the shape of the result field.
 
-    def __init__(self, domain: DomainRange):
-        self.domain_constraints = {
-            (r[0], r[1] + r[2], sympy.var(f"__gtir_{dim.value}_size", integer=True, negative=False))
-            for dim, r in domain
-        }
+    It should be enough to allocate an array with shape (upper_bound - lower_bound)
+    but this would require to use array offset for compensate for the start index.
+    Suppose that a field operator executes on domain [2,N-2], the dace array to store
+    the result only needs size (N-4), but this would require to compensate all array
+    accesses with offset -2 (which corresponds to -lower_bound). Instead, we choose
+    to allocate (N-2), leaving positions [0:2] unused. The reason is that array offset
+    is known to cause issues to SDFG inlining. Besides, map fusion will in any case
+    eliminate most of transient arrays.
 
-    def simplify(self, expr: dace.symbolic.SymbolicType) -> dace.symbolic.SymbolicType:
-        for lb, ub, size in self.domain_constraints:
-            expr = expr.subs(lb, ub - size).subs(size, ub - lb)
-        return expr
+    Args:
+        domain: The field operator domain.
+
+    Returns:
+        A tuple of three lists containing:
+            - the domain dimensions
+            - the domain origin, that is the start indices in all dimensions
+            - the domain size in each dimension
+    """
+    domain_dims, domain_lbs, domain_sizes = [], [], []
+    for dim, dim_range in domain:
+        lower_bound = dim_range[0]
+        # after introduction of concat_where, the strict order of lower and upper bounds is not guaranteed
+        upper_bound = domain_parser.simplify(
+            dace.symbolic.pystr_to_symbolic(f"max({dim_range[0]}, {dim_range[1] + dim_range[2]})")
+        )
+        domain_dims.append(dim)
+        domain_lbs.append(lower_bound)
+        domain_sizes.append(upper_bound - lower_bound)
+    return domain_dims, domain_lbs, domain_sizes

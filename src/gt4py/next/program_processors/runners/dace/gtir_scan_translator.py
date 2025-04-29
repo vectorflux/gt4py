@@ -110,7 +110,7 @@ def _create_scan_field_operator_impl(
     assert isinstance(dataflow_output_desc, dace.data.Array)
 
     # the memory layout of the output field follows the field operator compute domain
-    field_dims, field_origin, field_shape = gtir_translators.get_field_layout(domain, domain_parser)
+    field_dims, field_origin, field_shape = gtir_domain.get_field_layout(domain, domain_parser)
     field_indices = gtir_translators.get_domain_indices(field_dims, field_origin)
     field_subset = dace_subsets.Range.from_indices(field_indices)
 
@@ -195,7 +195,7 @@ def _create_scan_field_operator(
     description of function arguments and return values.
     """
     sdfg, state, domain_parser = ctx.sdfg, ctx.state, ctx.domain_parser
-    domain_dims, _, _ = gtir_translators.get_field_layout(domain, domain_parser)
+    domain_dims, _, _ = gtir_domain.get_field_layout(domain, domain_parser)
 
     # create a map scope to execute the `LoopRegion` over the horizontal domain
     if len(domain_dims) == 1:

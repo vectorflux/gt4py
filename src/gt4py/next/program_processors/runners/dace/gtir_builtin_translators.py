@@ -311,44 +311,6 @@ def _parse_fieldop_arg(
         return gtx_utils.tree_map(lambda targ: targ.get_local_view(domain))(arg)
 
 
-def get_field_layout(
-    domain: gtir_domain.DomainRange,
-    domain_parser: gtir_domain.GTIRDomainParser,
-) -> tuple[list[gtx_common.Dimension], list[dace.symbolic.SymExpr], list[dace.symbolic.SymExpr]]:
-    """
-    Parse the field operator domain and generates the shape of the result field.
-
-    It should be enough to allocate an array with shape (upper_bound - lower_bound)
-    but this would require to use array offset for compensate for the start index.
-    Suppose that a field operator executes on domain [2,N-2], the dace array to store
-    the result only needs size (N-4), but this would require to compensate all array
-    accesses with offset -2 (which corresponds to -lower_bound). Instead, we choose
-    to allocate (N-2), leaving positions [0:2] unused. The reason is that array offset
-    is known to cause issues to SDFG inlining. Besides, map fusion will in any case
-    eliminate most of transient arrays.
-
-    Args:
-        domain: The field operator domain.
-
-    Returns:
-        A tuple of three lists containing:
-            - the domain dimensions
-            - the domain origin, that is the start indices in all dimensions
-            - the domain size in each dimension
-    """
-    domain_dims, domain_lbs, domain_sizes = [], [], []
-    for dim, dim_range in domain:
-        lower_bound = dim_range[0]
-        # after introduction of concat_where, the strict order of lower and upper bounds is not guaranteed
-        upper_bound = domain_parser.simplify(
-            dace.symbolic.pystr_to_symbolic(f"max({dim_range[0]}, {dim_range[1] + dim_range[2]})")
-        )
-        domain_dims.append(dim)
-        domain_lbs.append(lower_bound)
-        domain_sizes.append(upper_bound - lower_bound)
-    return domain_dims, domain_lbs, domain_sizes
-
-
 def _create_field_operator_impl(
     ctx: gtir_sdfg.SDFGContext,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
@@ -379,7 +341,7 @@ def _create_field_operator_impl(
     dataflow_output_desc = output_edge.result.dc_node.desc(ctx.sdfg)
 
     # the memory layout of the output field follows the field operator compute domain
-    field_dims, field_origin, field_shape = get_field_layout(domain, ctx.domain_parser)
+    field_dims, field_origin, field_shape = gtir_domain.get_field_layout(domain, ctx.domain_parser)
     if len(domain) == 0:
         # The field operator computes a zero-dimensional field, and the data subset
         # is set later depending on the element type (`ts.ListType` or `ts.ScalarType`)
@@ -601,7 +563,7 @@ def _make_concat_scalar_broadcast(
     sdfg, state, domain_parser = ctx.sdfg, ctx.state, ctx.domain_parser
     assert isinstance(inp.gt_type, ts.FieldType)
     assert len(inp.gt_type.dims) == 1
-    out_dims, out_origin, out_shape = get_field_layout(domain, domain_parser)
+    out_dims, out_origin, out_shape = gtir_domain.get_field_layout(domain, domain_parser)
     out_type = ts.FieldType(dims=out_dims, dtype=inp.gt_type.dtype)
 
     out_name, out_desc = sdfg.add_temp_transient(out_shape, inp_desc.dtype)
@@ -686,7 +648,9 @@ def translate_concat_where(
 
         # we use the concat domain, stored in the annex, as the domain of output field
         output_domain = gtir_domain.extract_domain(node_domain)
-        output_dims, output_origin, output_shape = get_field_layout(output_domain, domain_parser)
+        output_dims, output_origin, output_shape = gtir_domain.get_field_layout(
+            output_domain, domain_parser
+        )
         concat_dim_index = output_dims.index(concat_dim)
 
         lower_domain_range, upper_domain_range = (
@@ -893,7 +857,9 @@ def _construct_if_branch_output(
 
     assert isinstance(out_type, ts.FieldType)
     assert isinstance(sym.type, ts.FieldType)
-    dims, origin, shape = get_field_layout(gtir_domain.extract_domain(domain), domain_parser)
+    dims, origin, shape = gtir_domain.get_field_layout(
+        gtir_domain.extract_domain(domain), domain_parser
+    )
     assert dims == out_type.dims
 
     if isinstance(out_type.dtype, ts.ScalarType):

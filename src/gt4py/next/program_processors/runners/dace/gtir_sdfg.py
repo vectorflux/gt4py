@@ -307,7 +307,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         return self.global_symbols[symbol_name]
 
     def is_column_axis(self, dim: gtx_common.Dimension) -> bool:
-        assert self.column_axis is not None
+        assert self.column_axis
         return dim == self.column_axis
 
     def setup_nested_context(
@@ -488,7 +488,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
     def _visit_expression(
         self,
         node: gtir.Expr,
-        domain_parser: gtir_domain.GTIRDomainParser,
+        domain: gtir_domain.FieldopDomain,
         sdfg: dace.SDFG,
         head_state: dace.SDFGState,
         use_temp: bool = True,
@@ -502,6 +502,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         Returns:
             A list of array nodes containing the result fields.
         """
+        domain_parser = gtir_domain.GTIRDomainParser(domain)
         result = self.visit(node, domain_parser=domain_parser, sdfg=sdfg, head_state=head_state)
 
         # sanity check: each statement should preserve the property of single exit state (aka head state),
@@ -651,17 +652,13 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
 
         # visit the domain expression
         domain = gtir_domain.extract_domain(stmt.domain)
-        domain_parser = gtir_domain.GTIRDomainParser(domain)
 
-        source_fields = self._visit_expression(stmt.expr, domain_parser, sdfg, state)
+        # lower the GTIR expression to a dataflow that computes some temporary fields
+        source_fields = self._visit_expression(stmt.expr, domain, sdfg, state)
 
         # the target expression could be a `SymRef` to an output node or a `make_tuple` expression
         # in case the statement returns more than one field
-        target_fields = self._visit_expression(
-            stmt.target, domain_parser, sdfg, state, use_temp=False
-        )
-
-        # TODO(edopao): add constraint on non-empty domain
+        target_fields = self._visit_expression(stmt.target, domain, sdfg, state, use_temp=False)
 
         expr_input_args = {
             sym_id

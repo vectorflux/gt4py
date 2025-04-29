@@ -75,7 +75,8 @@ class GTIRDomainParser:
 
     def __init__(self, domain: FieldopDomain):
         self.domain_constraints = {
-            (lb, ub, sympy.var(f"{dim.value}_size", positive=True)) for dim, lb, ub in domain
+            (lb, ub, sympy.var(f"__gtir_{dim.value}_size", integer=True, negative=False))
+            for dim, lb, ub in domain
         }
 
     def simplify(self, expr: dace.symbolic.SymbolicType) -> dace.symbolic.SymbolicType:

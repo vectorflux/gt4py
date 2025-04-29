@@ -338,10 +338,11 @@ def _create_field_operator_impl(
         The field data descriptor, which includes the field access node in the
         given `state` and the field domain offset.
     """
-    dataflow_output_desc = output_edge.result.dc_node.desc(ctx.sdfg)
+    sdfg, state, domain_parser = ctx.sdfg, ctx.state, ctx.domain_parser
+    dataflow_output_desc = output_edge.result.dc_node.desc(sdfg)
 
     # the memory layout of the output field follows the field operator compute domain
-    field_dims, field_origin, field_shape = gtir_domain.get_field_layout(domain, ctx.domain_parser)
+    field_dims, field_origin, field_shape = gtir_domain.get_field_layout(domain, domain_parser)
     if len(domain) == 0:
         # The field operator computes a zero-dimensional field, and the data subset
         # is set later depending on the element type (`ts.ListType` or `ts.ScalarType`)
@@ -444,12 +445,7 @@ def _create_field_operator(
         output_symbol_tree = gtir_sdfg_utils.make_symbol_tree("x", node_type)
         return gtx_utils.tree_map(
             lambda output_edge, output_sym: _create_field_operator_impl(
-                ctx,
-                sdfg_builder,
-                domain,
-                output_edge,
-                output_sym.type,
-                map_exit,
+                ctx, sdfg_builder, domain, output_edge, output_sym.type, map_exit
             )
         )(output_tree, output_symbol_tree)
 

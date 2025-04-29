@@ -12,6 +12,7 @@ from typing import TypeAlias
 
 import dace
 import sympy
+from dace import subsets as dace_subsets
 
 from gt4py.next import common as gtx_common
 from gt4py.next.iterator import ir as gtir
@@ -19,9 +20,7 @@ from gt4py.next.iterator.ir_utils import common_pattern_matcher as cpm, domain_u
 from gt4py.next.program_processors.runners.dace import gtir_sdfg_utils
 
 
-FieldopDomain: TypeAlias = list[
-    tuple[gtx_common.Dimension, dace.symbolic.SymbolicType, dace.symbolic.SymbolicType]
-]
+DomainRange: TypeAlias = list[tuple[gtx_common.Dimension, dace_subsets.Subset]]
 """
 Domain of a field operator represented as a list of tuples with 3 elements:
  - dimension definition
@@ -30,14 +29,15 @@ Domain of a field operator represented as a list of tuples with 3 elements:
 """
 
 
-def extract_domain(node: gtir.Node) -> FieldopDomain:
+def extract_domain(node: gtir.Node) -> DomainRange:
     """
     Visits the domain of a field operator and returns a list of dimensions and
     the corresponding lower and upper bounds. The returned lower bound is inclusive,
     the upper bound is exclusive: [lower_bound, upper_bound[
     """
 
-    domain = []
+    domain_dims = []
+    domain_range = []
 
     if cpm.is_call_to(node, ("cartesian_domain", "unstructured_domain")):
         for named_range in node.args:
@@ -49,23 +49,21 @@ def extract_domain(node: gtir.Node) -> FieldopDomain:
                 gtir_sdfg_utils.get_symbolic(arg) for arg in named_range.args[1:3]
             )
             dim = gtx_common.Dimension(axis.value, axis.kind)
-            domain.append((dim, lower_bound, upper_bound))
+            domain_dims.append(dim)
+            domain_range.append((lower_bound, upper_bound - 1, 1))
 
     elif isinstance(node, domain_utils.SymbolicDomain):
         assert str(node.grid_type) in {"cartesian_domain", "unstructured_domain"}
         for dim, drange in node.ranges.items():
-            domain.append(
-                (
-                    dim,
-                    gtir_sdfg_utils.get_symbolic(drange.start),
-                    gtir_sdfg_utils.get_symbolic(drange.stop),
-                )
-            )
+            lower_bound = gtir_sdfg_utils.get_symbolic(drange.start)
+            upper_bound = gtir_sdfg_utils.get_symbolic(drange.stop)
+            domain_dims.append(dim)
+            domain_range.append((lower_bound, upper_bound - 1, 1))
 
     else:
         raise ValueError(f"Invalid domain {node}.")
 
-    return domain
+    return list(zip(domain_dims, dace_subsets.Range(domain_range), strict=True))
 
 
 class GTIRDomainParser:
@@ -73,10 +71,10 @@ class GTIRDomainParser:
         tuple[dace.symbolic.SymbolicType, dace.symbolic.SymbolicType, sympy.Basic]
     ]
 
-    def __init__(self, domain: FieldopDomain):
+    def __init__(self, domain: DomainRange):
         self.domain_constraints = {
-            (lb, ub, sympy.var(f"__gtir_{dim.value}_size", integer=True, negative=False))
-            for dim, lb, ub in domain
+            (r[0], r[1] + r[2], sympy.var(f"__gtir_{dim.value}_size", integer=True, negative=False))
+            for dim, r in domain
         }
 
     def simplify(self, expr: dace.symbolic.SymbolicType) -> dace.symbolic.SymbolicType:

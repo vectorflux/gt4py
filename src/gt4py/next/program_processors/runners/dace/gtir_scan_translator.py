@@ -49,7 +49,7 @@ def _parse_scan_fieldop_arg(
     node: gtir.Expr,
     ctx: gtir_sdfg.SDFGContext,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
 ) -> gtir_dataflow.MemletExpr | tuple[gtir_dataflow.MemletExpr | tuple[Any, ...], ...]:
     """Helper method to visit an expression passed as argument to a scan field operator.
 
@@ -85,7 +85,7 @@ def _create_scan_field_operator_impl(
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     sdfg: dace.SDFG,
     state: dace.SDFGState,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     domain_parser: gtir_domain.GTIRDomainParser,
     output_edge: gtir_dataflow.DataflowOutputEdge,
     output_type: ts.FieldType,
@@ -175,7 +175,7 @@ def _create_scan_field_operator_impl(
 
 def _create_scan_field_operator(
     ctx: gtir_sdfg.SDFGContext,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     node_type: ts.FieldType | ts.TupleType,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     input_edges: Iterable[gtir_dataflow.DataflowInputEdge],
@@ -213,8 +213,8 @@ def _create_scan_field_operator(
             "fieldop",
             state,
             ndrange={
-                gtir_sdfg_utils.get_map_variable(dim): f"{lower_bound}:{upper_bound}"
-                for dim, lower_bound, upper_bound in domain
+                gtir_sdfg_utils.get_map_variable(dim): dim_range
+                for dim, dim_range in domain
                 if not sdfg_builder.is_column_axis(dim)
             },
         )
@@ -268,7 +268,7 @@ def _lower_lambda_to_nested_sdfg(
     lambda_node: gtir.Lambda,
     ctx: gtir_sdfg.SDFGContext,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     init_data: gtir_translators.FieldopResult,
     lambda_symbols: dict[str, ts.DataType],
     scan_forward: bool,
@@ -323,8 +323,8 @@ def _lower_lambda_to_nested_sdfg(
 
     # use the vertical dimension in the domain as scan dimension
     scan_domain = [
-        (dim, lower_bound, upper_bound)
-        for dim, lower_bound, upper_bound in domain
+        (dim, dim_range[0], dim_range[1] + dim_range[2])
+        for dim, dim_range in domain
         if sdfg_builder.is_column_axis(dim)
     ]
     assert len(scan_domain) == 1

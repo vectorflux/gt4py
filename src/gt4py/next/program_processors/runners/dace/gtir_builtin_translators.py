@@ -127,7 +127,7 @@ class FieldopData:
         return FieldopData(outer_node, self.gt_type, tuple(outer_origin))
 
     def get_local_view(
-        self, domain: gtir_domain.FieldopDomain, sdfg: dace.SDFG
+        self, domain: gtir_domain.DomainRange, sdfg: dace.SDFG
     ) -> gtir_dataflow.IteratorExpr | gtir_dataflow.MemletExpr:
         """Helper method to access a field in local view, given the compute domain of a field operator."""
         if isinstance(self.gt_type, ts.ScalarType):
@@ -148,7 +148,7 @@ class FieldopData:
                 # The `make_field` constructor converts any local dimension, if present, to `ListType`
                 # element type, while leaving the field domain with all global dimensions.
                 assert all(dim != gtx_common.DimensionKind.LOCAL for dim in self.gt_type.dims)
-                domain_dims = [dim for dim, _, _ in domain]
+                domain_dims = [dim for dim, _ in domain]
                 domain_indices = get_domain_indices(domain_dims, origin=None)
                 it_indices = {
                     dim: gtir_dataflow.SymbolExpr(index, INDEX_DTYPE)
@@ -294,7 +294,7 @@ def _parse_fieldop_arg(
     node: gtir.Expr,
     ctx: gtir_sdfg.SDFGContext,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
 ) -> (
     gtir_dataflow.IteratorExpr
     | gtir_dataflow.MemletExpr
@@ -312,7 +312,7 @@ def _parse_fieldop_arg(
 
 
 def get_field_layout(
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     domain_parser: gtir_domain.GTIRDomainParser,
 ) -> tuple[list[gtx_common.Dimension], list[dace.symbolic.SymExpr], list[dace.symbolic.SymExpr]]:
     """
@@ -336,24 +336,23 @@ def get_field_layout(
             - the domain origin, that is the start indices in all dimensions
             - the domain size in each dimension
     """
-    if len(domain) == 0:
-        return [], [], []
-    domain_dims, domain_lbs, domain_ubs = zip(*domain)
-    # after introduction of concat_where, the strict order of lower and upper bounds is not guaranteed
-    domain_ubs = tuple(
-        [
-            domain_parser.simplify(dace.symbolic.pystr_to_symbolic(f"max({lb}, {ub})"))
-            for lb, ub in zip(domain_lbs, domain_ubs, strict=True)
-        ]
-    )
-    domain_sizes = [(ub - lb) for lb, ub in zip(domain_lbs, domain_ubs)]
-    return list(domain_dims), list(domain_lbs), domain_sizes
+    domain_dims, domain_lbs, domain_sizes = [], [], []
+    for dim, dim_range in domain:
+        lower_bound = dim_range[0]
+        # after introduction of concat_where, the strict order of lower and upper bounds is not guaranteed
+        upper_bound = domain_parser.simplify(
+            dace.symbolic.pystr_to_symbolic(f"max({dim_range[0]}, {dim_range[1] + dim_range[2]})")
+        )
+        domain_dims.append(dim)
+        domain_lbs.append(lower_bound)
+        domain_sizes.append(upper_bound - lower_bound)
+    return domain_dims, domain_lbs, domain_sizes
 
 
 def _create_field_operator_impl(
     ctx: gtir_sdfg.SDFGContext,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     output_edge: gtir_dataflow.DataflowOutputEdge,
     output_type: ts.FieldType,
     map_exit: dace.nodes.MapExit,
@@ -429,7 +428,7 @@ def _create_field_operator_impl(
 
 def _create_field_operator(
     ctx: gtir_sdfg.SDFGContext,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     node_type: ts.FieldType | ts.TupleType,
     sdfg_builder: gtir_sdfg.SDFGBuilder,
     input_edges: Iterable[gtir_dataflow.DataflowInputEdge],
@@ -463,10 +462,7 @@ def _create_field_operator(
         }
     else:
         # create map range corresponding to the field operator domain
-        map_range = {
-            gtir_sdfg_utils.get_map_variable(dim): f"{lower_bound}:{upper_bound}"
-            for dim, lower_bound, upper_bound in domain
-        }
+        map_range = {gtir_sdfg_utils.get_map_variable(dim): dim_range for dim, dim_range in domain}
     map_entry, map_exit = sdfg_builder.add_map("fieldop", ctx.state, map_range)
 
     # here we setup the edges passing through the map entry node
@@ -595,7 +591,7 @@ def _make_concat_scalar_broadcast(
     ctx: gtir_sdfg.SDFGContext,
     inp: FieldopData,
     inp_desc: dace.data.Array,
-    domain: gtir_domain.FieldopDomain,
+    domain: gtir_domain.DomainRange,
     concat_dim_index: int,
 ) -> tuple[FieldopData, dace.data.Array]:
     """
@@ -658,7 +654,9 @@ def translate_concat_where(
     mask_domain = gtir_domain.extract_domain(node.args[0])
     if len(mask_domain) != 1:
         raise NotImplementedError("Expected `concat_where` along single axis.")
-    concat_dim, mask_lower_bound, mask_upper_bound = mask_domain[0]
+    concat_dim, mask_range = mask_domain[0]
+    mask_lower_bound = mask_range[0]
+    mask_upper_bound = mask_range[1] + mask_range[2]
 
     def concatenate_inputs(
         node_domain: gtir.Expr,
@@ -691,11 +689,15 @@ def translate_concat_where(
         output_dims, output_origin, output_shape = get_field_layout(output_domain, domain_parser)
         concat_dim_index = output_dims.index(concat_dim)
 
+        lower_domain_range, upper_domain_range = (
+            [(r[0], r[1] + r[2]) for _, r in domain] for domain in [lower_domain, upper_domain]
+        )
+
         # in case one of the arguments is a scalar value, we convert it to a single-element
         # 1D field with the dimension of the concat expression
         if isinstance(lower.gt_type, ts.ScalarType):
             assert isinstance(upper.gt_type, ts.FieldType)
-            origin = lower_domain[concat_dim_index][1]
+            origin = lower_domain_range[concat_dim_index][0]
             lower = FieldopData(
                 lower.dc_node,
                 ts.FieldType(dims=[concat_dim], dtype=lower.gt_type),
@@ -703,7 +705,7 @@ def translate_concat_where(
             )
         elif isinstance(upper.gt_type, ts.ScalarType):
             assert isinstance(lower.gt_type, ts.FieldType)
-            origin = upper_domain[concat_dim_index][1]
+            origin = lower_domain_range[concat_dim_index][0]
             upper = FieldopData(
                 upper.dc_node,
                 ts.FieldType(dims=[concat_dim], dtype=upper.gt_type),
@@ -746,25 +748,25 @@ def translate_concat_where(
         assert all(ftype.dims == output_dims for ftype in (lower.gt_type, upper.gt_type))
 
         # the lower/upper range to be copied is defined by the start ('range_0') and stop ('range_1') indices
-        lower_range_0 = lower_domain[concat_dim_index][1]
+        lower_range_0 = lower_domain_range[concat_dim_index][0]
         lower_range_1 = (
             (lower_range_0 + 1)
             if is_lower_slice
             else domain_parser.simplify(
                 dace.symbolic.pystr_to_symbolic(
-                    f"max({lower_range_0}, {lower_domain[concat_dim_index][2]})"
+                    f"max({lower_range_0}, {lower_domain_range[concat_dim_index][1]})"
                 )
             )
         )
         lower_range_size = lower_range_1 - lower_range_0
 
-        upper_range_0 = upper_domain[concat_dim_index][1]
+        upper_range_0 = upper_domain_range[concat_dim_index][0]
         upper_range_1 = (
             (upper_range_0 + 1)
             if is_upper_slice
             else domain_parser.simplify(
                 dace.symbolic.pystr_to_symbolic(
-                    f"max({upper_range_0}, {upper_domain[concat_dim_index][2]})"
+                    f"max({upper_range_0}, {upper_domain_range[concat_dim_index][1]})"
                 )
             )
         )
@@ -782,8 +784,8 @@ def translate_concat_where(
                 )
                 if dim_index == concat_dim_index
                 else (
-                    lower_domain[dim_index][1] - lower.origin[dim_index],
-                    lower_domain[dim_index][1] - lower.origin[dim_index] + size - 1,
+                    lower_domain_range[dim_index][0] - lower.origin[dim_index],
+                    lower_domain_range[dim_index][0] - lower.origin[dim_index] + size - 1,
                     1,
                 )
                 for dim_index, size in enumerate(output_desc.shape)
@@ -816,8 +818,8 @@ def translate_concat_where(
                 )
                 if dim_index == concat_dim_index
                 else (
-                    upper_domain[dim_index][1] - upper.origin[dim_index],
-                    upper_domain[dim_index][1] - upper.origin[dim_index] + size - 1,
+                    upper_domain_range[dim_index][0] - upper.origin[dim_index],
+                    upper_domain_range[dim_index][0] - upper.origin[dim_index] + size - 1,
                     1,
                 )
                 for dim_index, size in enumerate(output_desc.shape)
@@ -1082,7 +1084,7 @@ def translate_index(
     assert "domain" in node.annex
     domain = gtir_domain.extract_domain(node.annex.domain)
     assert len(domain) == 1
-    dim, _, _ = domain[0]
+    dim, _ = domain[0]
     dim_index = gtir_sdfg_utils.get_map_variable(dim)
 
     index_data, _ = sdfg_builder.add_temp_scalar(sdfg, INDEX_DTYPE)

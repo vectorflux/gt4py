@@ -219,16 +219,16 @@ def _collect_symbols_in_domain_expressions(
 
 
 def _make_access_index_for_field(
-    domain: gtir_domain.FieldopDomain, data: gtir_builtin_translators.FieldopData
+    domain: gtir_domain.DomainRange, data: gtir_builtin_translators.FieldopData
 ) -> dace.subsets.Range:
     """Helper method to build a memlet subset of a field over the given domain."""
     # convert domain expression to dictionary to ease access to the dimensions,
     # since the access indices have to follow the order of dimensions in field domain
     if isinstance(data.gt_type, ts.FieldType) and len(data.gt_type.dims) != 0:
         assert data.origin is not None
-        domain_ranges = {dim: (lb, ub) for dim, lb, ub in domain}
+        domain_ranges = dict(domain)
         return dace.subsets.Range(
-            (domain_ranges[dim][0] - origin, domain_ranges[dim][1] - origin - 1, 1)
+            (domain_ranges[dim][0] - origin, domain_ranges[dim][1] - origin, domain_ranges[dim][2])
             for dim, origin in zip(data.gt_type.dims, data.origin, strict=True)
         )
     else:
@@ -515,7 +515,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
     def _visit_expression(
         self,
         node: gtir.Expr,
-        domain: gtir_domain.FieldopDomain,
+        domain: gtir_domain.DomainRange,
         sdfg: dace.SDFG,
         head_state: dace.SDFGState,
         use_temp: bool = True,

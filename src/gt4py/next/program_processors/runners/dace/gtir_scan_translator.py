@@ -111,8 +111,7 @@ def _create_scan_field_operator_impl(
 
     # the memory layout of the output field follows the field operator compute domain
     field_dims, field_origin, field_shape = gtir_domain.get_field_layout(domain, domain_parser)
-    field_indices = gtir_translators.get_domain_indices(field_dims, field_origin)
-    field_subset = dace_subsets.Range.from_indices(field_indices)
+    field_subset = gtir_domain.get_field_subset(domain)
 
     # the vertical dimension used as scan column is computed by the `LoopRegion`
     # inside the map scope, therefore it is excluded from the map range
@@ -290,7 +289,7 @@ def _lower_lambda_to_nested_sdfg(
 
     Args:
         lambda_node: The lambda representing the stencil expression on the horizontal level.
-        sdfg: The SDFG where the scan field operator is translated.
+        ctx: The parent SDFG context of the lambda expression.
         sdfg_builder: The SDFG builder object to access the field operator context.
         domain: The field operator domain, with all horizontal and vertical dimensions.
         init_data: The data produced in the field operator context that is used

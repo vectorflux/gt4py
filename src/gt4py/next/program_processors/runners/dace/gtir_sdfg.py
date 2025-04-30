@@ -118,11 +118,14 @@ class DataflowBuilder(Protocol):
 
 @dataclasses.dataclass(frozen=True)
 class SDFGContext:
+    """Represents the SDFG context in which to lower a GTIR node to dataflow."""
+
     sdfg: dace.SDFG
     state: dace.SDFGState
     domain_parser: gtir_domain.GTIRDomainParser
 
     def clone(self, state: dace.SDFGState) -> "SDFGContext":
+        """Create a new context for the given state."""
         return SDFGContext(self.sdfg, state, self.domain_parser)
 
 
@@ -166,17 +169,17 @@ class SDFGBuilder(DataflowBuilder, Protocol):
         that is scalar values represented as dace symbols in the parent SDFG.
 
         Args:
-            node:
-            sdfg_name:
+            node: The GTIR node to be lowered in the nesed SDFG context.
+            sdfg_name: Name of the new nested SDFG.
             parent_ctx: The parent SDFG context.
             scope_symbols: Mapping from symbol name to data type for the GTIR symbols
                 forwarded to the nested context.
-            state_name:
+            state_name: Name of the entry state in the nested SDFG, optional.
 
         Returns:
             A tuple containing two elements:
-            - a visitor object implementing the `SDFGBuilder` protocol.
-            - the context for the nested SDFG.
+            - Visitor object implementing the `SDFGBuilder` protocol.
+            - Context object for the nested SDFG.
         """
         ...
 

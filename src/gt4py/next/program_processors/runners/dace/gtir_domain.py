@@ -29,17 +29,35 @@ Domain of a field operator represented as a list of tuples with 2 elements:
 
 
 class GTIRDomainParser:
+    """Utility class to apply domain constraints on a dace symbolic expression.
+
+    Dace uses sympy for symbolic expression in the SDFG. By applying assumptions
+    on the sympy expression, we sometimes obtain a simplified expression.
+    This is particularly important in the lowering of concat_where domain expressions,
+    because it usually results in cleaner memlet subsets and better map fusion.
+    """
+
     domain_constraints: set[
         tuple[dace.symbolic.SymbolicType, dace.symbolic.SymbolicType, sympy.Basic]
     ]
 
     def __init__(self, domain: DomainRange):
+        # We create a set of variables to represent the domain extent. The actual constraint
+        # is given by the assumption that this variable should be integer and non-negative.
         self.domain_constraints = {
             (r[0], r[1] + r[2], sympy.var(f"__gtir_{dim.value}_size", integer=True, negative=False))
             for dim, r in domain
         }
 
     def simplify(self, expr: dace.symbolic.SymbolicType) -> dace.symbolic.SymbolicType:
+        """Simplifies a symbolic domain expression by applying some constraints.
+
+        Args:
+            expr: The symbolic expression to simplify.
+
+        Returns:
+            A new symbolic expression.
+        """
         for lb, ub, size in self.domain_constraints:
             expr = expr.subs(lb, ub - size).subs(size, ub - lb)
         return expr

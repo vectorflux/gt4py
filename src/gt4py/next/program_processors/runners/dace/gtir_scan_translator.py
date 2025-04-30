@@ -289,7 +289,7 @@ def _lower_lambda_to_nested_sdfg(
 
     Args:
         lambda_node: The lambda representing the stencil expression on the horizontal level.
-        sdfg: The SDFG where the scan field operator is translated.
+        ctx: The parent SDFG context of the lambda expression.
         sdfg_builder: The SDFG builder object to access the field operator context.
         domain: The field operator domain, with all horizontal and vertical dimensions.
         init_data: The data produced in the field operator context that is used

@@ -300,9 +300,8 @@ def _create_field_operator_impl(
     This method is called by `_create_field_operator()`.
 
     Args:
+        ctx: The SDFG context of the field operator.
         sdfg_builder: The object used to build the map scope in the provided SDFG.
-        sdfg: The SDFG that represents the scope of the field data.
-        state: The SDFG state where to create an access node to the field data.
         domain: The domain of the field operator that computes the field.
         output_edge: The dataflow write edge representing the output data.
         output_type: The GT4Py field type descriptor.
@@ -371,8 +370,7 @@ def _create_field_operator(
     fields: for each field, this method will call `_create_field_operator_impl()`.
 
     Args:
-        sdfg: The SDFG that represents the scope of the field data.
-        state: The SDFG state where to create an access node to the field data.
+        ctx: The SDFG context of the field operator.
         domain: The domain of the field operator that computes the field.
         node_type: The GT4Py type of the IR node that produces this field.
         sdfg_builder: The object used to build the map scope in the provided SDFG.

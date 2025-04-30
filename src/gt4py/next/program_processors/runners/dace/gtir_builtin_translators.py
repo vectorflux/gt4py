@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import abc
 import dataclasses
-from typing import TYPE_CHECKING, Any, Final, Iterable, Optional, Protocol, Sequence, TypeAlias
+from typing import TYPE_CHECKING, Any, Final, Iterable, Optional, Protocol, TypeAlias
 
 import dace
 from dace import subsets as dace_subsets
@@ -33,32 +33,6 @@ from gt4py.next.type_system import type_info as ti, type_specifications as ts
 
 if TYPE_CHECKING:
     from gt4py.next.program_processors.runners.dace import gtir_sdfg
-
-
-def get_domain_indices(
-    dims: Sequence[gtx_common.Dimension], origin: Optional[Sequence[dace.symbolic.SymExpr]]
-) -> dace_subsets.Indices:
-    """
-    Helper function to construct the list of indices for a field domain, applying
-    an optional origin in each dimension as start index.
-
-    Args:
-        dims: The field dimensions.
-        origin: The domain start index in each dimension. If set to `None`, assume all zeros.
-
-    Returns:
-        A list of indices for field access in dace arrays. As this list is returned
-        as `dace.subsets.Indices`, it should be converted to `dace.subsets.Range` before
-        being used in memlet subset because ranges are better supported throughout DaCe.
-    """
-    assert len(dims) != 0
-    index_variables = [
-        dace.symbolic.pystr_to_symbolic(gtir_sdfg_utils.get_map_variable(dim)) for dim in dims
-    ]
-    origin = [0] * len(index_variables) if origin is None else origin
-    return dace_subsets.Indices(
-        [index - start_index for index, start_index in zip(index_variables, origin, strict=True)]
-    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -149,7 +123,7 @@ class FieldopData:
                 # element type, while leaving the field domain with all global dimensions.
                 assert all(dim != gtx_common.DimensionKind.LOCAL for dim in self.gt_type.dims)
                 domain_dims = [dim for dim, _ in domain]
-                domain_indices = get_domain_indices(domain_dims, origin=None)
+                domain_indices = gtir_domain.get_domain_indices(domain_dims, origin=None)
                 it_indices = {
                     dim: gtir_dataflow.SymbolExpr(index, INDEX_DTYPE)
                     for dim, index in zip(domain_dims, domain_indices)
@@ -343,13 +317,7 @@ def _create_field_operator_impl(
 
     # the memory layout of the output field follows the field operator compute domain
     field_dims, field_origin, field_shape = gtir_domain.get_field_layout(domain, domain_parser)
-    if len(domain) == 0:
-        # The field operator computes a zero-dimensional field, and the data subset
-        # is set later depending on the element type (`ts.ListType` or `ts.ScalarType`)
-        field_subset = dace_subsets.Range([])
-    else:
-        field_indices = get_domain_indices(field_dims, field_origin)
-        field_subset = dace_subsets.Range.from_indices(field_indices)
+    field_subset = gtir_domain.get_field_subset(domain)
 
     if isinstance(output_edge.result.gt_dtype, ts.ScalarType):
         if output_edge.result.gt_dtype != output_type.dtype:

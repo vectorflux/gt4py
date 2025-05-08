@@ -197,8 +197,6 @@ def apply_fieldview_transforms(
 ) -> itir.Program:
     ir = inline_fundefs.InlineFundefs().visit(ir)
     ir = inline_fundefs.prune_unreferenced_fundefs(ir)
-    ir = InlineLambdas.apply(ir, opcount_preserving=True)
-    ir = ConstantFolding.apply(ir)
     ir = InlineLambdas.apply(ir, opcount_preserving=True, force_inline_lambda_args=True)
     ir = CollapseTuple.apply(
         ir,

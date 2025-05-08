@@ -745,12 +745,7 @@ class SplitMemlet(dace_transformation.SingleStateTransformation):
                     found_edge_to_split = True
                 continue
             elif isinstance(consumer, dace_nodes.MapEntry):
-                try:
-                    invalid_subset = tmp_subset.intersects(consumer_read) and (not tmp_subset.covers(consumer_read))
-                except TypeError:
-                    # sympy cannot determine truth value of Relational
-                    invalid_subset = False
-                if invalid_subset:
+                if tmp_subset.intersects(consumer_read) and (not tmp_subset.covers(consumer_read)):
                     return False
                 continue
             else:

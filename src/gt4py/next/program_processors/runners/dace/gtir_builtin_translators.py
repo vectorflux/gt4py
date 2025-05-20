@@ -606,35 +606,33 @@ def translate_concat_where(
         else:
             raise ValueError(f"Unexpected concat mask {node.args[0]}.")
 
+        # in case one of the arguments is a scalar value, we convert it to a single-element
+        # 1D field with the dimension of the concat expression
+        if isinstance(lower.gt_type, ts.ScalarType):
+            assert len(lower_domain) == 0
+            assert isinstance(upper.gt_type, ts.FieldType)
+            lower = FieldopData(
+                lower.dc_node,
+                ts.FieldType(dims=[concat_dim], dtype=lower.gt_type),
+                origin=(concat_dim_bound - 1,),
+            )
+            lower_domain = [(concat_dim, (concat_dim_bound - 1, concat_dim_bound, 1))]
+        elif isinstance(upper.gt_type, ts.ScalarType):
+            assert len(upper_domain) == 0
+            assert isinstance(lower.gt_type, ts.FieldType)
+            upper = FieldopData(
+                upper.dc_node,
+                ts.FieldType(dims=[concat_dim], dtype=upper.gt_type),
+                origin=(concat_dim_bound,),
+            )
+            upper_domain = [(concat_dim, (concat_dim_bound, concat_dim_bound + 1, 1))]
+
         # we use the concat domain, stored in the annex, as the domain of output field
         output_domain = gtir_domain.extract_domain(node_domain)
         output_dims, output_origin, output_shape = gtir_domain.get_field_layout(
             output_domain, domain_parser
         )
         concat_dim_index = output_dims.index(concat_dim)
-
-        lower_domain_range, upper_domain_range = (
-            [(r[0], r[1] + r[2]) for _, r in domain] for domain in [lower_domain, upper_domain]
-        )
-
-        # in case one of the arguments is a scalar value, we convert it to a single-element
-        # 1D field with the dimension of the concat expression
-        if isinstance(lower.gt_type, ts.ScalarType):
-            assert isinstance(upper.gt_type, ts.FieldType)
-            origin = lower_domain_range[concat_dim_index][0]
-            lower = FieldopData(
-                lower.dc_node,
-                ts.FieldType(dims=[concat_dim], dtype=lower.gt_type),
-                origin=(origin,),
-            )
-        elif isinstance(upper.gt_type, ts.ScalarType):
-            assert isinstance(lower.gt_type, ts.FieldType)
-            origin = lower_domain_range[concat_dim_index][0]
-            upper = FieldopData(
-                upper.dc_node,
-                ts.FieldType(dims=[concat_dim], dtype=upper.gt_type),
-                origin=(origin,),
-            )
 
         is_lower_slice, is_upper_slice = (False, False)
         if concat_dim not in lower.gt_type.dims:
@@ -656,10 +654,22 @@ def translate_concat_where(
             )
             is_upper_slice = True
         elif len(lower.gt_type.dims) == 1:
+            assert len(lower_domain) == 1 and lower_domain[0][0] == concat_dim
+            lower_domain = [
+                *output_domain[:concat_dim_index],
+                lower_domain[0],
+                *output_domain[concat_dim_index + 1 :],
+            ]
             lower, lower_desc = _make_concat_scalar_broadcast(
                 ctx, lower, lower_desc, lower_domain, concat_dim_index
             )
         elif len(upper.gt_type.dims) == 1:
+            assert len(upper_domain) == 1 and upper_domain[0][0] == concat_dim
+            upper_domain = [
+                *output_domain[:concat_dim_index],
+                upper_domain[0],
+                *output_domain[concat_dim_index + 1 :],
+            ]
             upper, upper_desc = _make_concat_scalar_broadcast(
                 ctx, upper, upper_desc, upper_domain, concat_dim_index
             )
@@ -672,6 +682,9 @@ def translate_concat_where(
         assert all(ftype.dims == output_dims for ftype in (lower.gt_type, upper.gt_type))
 
         # the lower/upper range to be copied is defined by the start ('range_0') and stop ('range_1') indices
+        lower_domain_range, upper_domain_range = (
+            [(r[0], r[1] + r[2]) for _, r in domain] for domain in [lower_domain, upper_domain]
+        )
         if is_lower_slice:
             lower_range_0 = lower.origin[concat_dim_index]
             lower_range_1 = lower_range_0 + 1

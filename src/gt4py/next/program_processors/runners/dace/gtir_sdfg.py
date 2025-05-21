@@ -18,6 +18,7 @@ import abc
 import dataclasses
 import itertools
 import operator
+import warnings
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Set, Tuple, Union
 
 import dace
@@ -154,22 +155,23 @@ class SDFGBuilder(DataflowBuilder, Protocol):
     @abc.abstractmethod
     def setup_nested_context(
         self,
-        node: gtir.Node,
+        node: gtir.Lambda,
         sdfg_name: str,
         parent_ctx: SDFGContext,
         scope_symbols: dict[str, ts.DataType],
         state_name: Optional[str] = None,
     ) -> tuple[SDFGBuilder, SDFGContext]:
         """
-        Create an SDFG context to translate a nested expression, indipendent
+        Create an nested SDFG context to lower a lambda expression, indipendent
         from the current context where the parent expression is being translated.
 
         This method will setup the global symbols, that correspond to the parameters
         of the expression to be lowered, as well as the set of symbolic arguments,
-        that is scalar values represented as dace symbols in the parent SDFG.
+        that is symbols used in domain expressions or scalar values represented
+        as dace symbols in the parent SDFG.
 
         Args:
-            node: The GTIR node to be lowered in the nesed SDFG context.
+            node: The lambda expression to be lowered as a nested SDFG.
             sdfg_name: Name of the new nested SDFG.
             parent_ctx: The parent SDFG context.
             scope_symbols: Mapping from symbol name to data type for the GTIR symbols
@@ -331,7 +333,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
 
     def setup_nested_context(
         self,
-        node: gtir.Node,
+        node: gtir.Lambda,
         sdfg_name: str,
         parent_ctx: SDFGContext,
         scope_symbols: dict[str, ts.DataType],
@@ -342,7 +344,7 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
 
         sdfg_builder = GTIRToSDFG(self.offset_provider_type, self.column_axis, scope_symbols)
         params = [gtir.Sym(id=p_name, type=p_type) for p_name, p_type in scope_symbols.items()]
-        symbolic_arguments = {
+        symbolic_arguments = _collect_symbols_in_domain_expressions(node, node.params) | {
             # scalar values represented as dace symbols in parent SDFG are mapped
             # to dace symbols in the nested SDFG
             pname
@@ -863,7 +865,40 @@ class GTIRToSDFG(eve.NodeVisitor, SDFGBuilder):
         }
 
         # map free symbols to parent SDFG
-        nsdfg_symbols_mapping = {str(sym): sym for sym in lambda_ctx.sdfg.free_symbols}
+        nsdfg_symbols_mapping = {}
+        nsdfg_init_state: Optional[dace.SDFGState] = None
+        for sym in lambda_ctx.sdfg.free_symbols:
+            if (sym_id := str(sym)) in lambda_arg_nodes:
+                # Map a scalar container to a symbol on the nested SDFG.
+                # TODO: Investigate alternative data representation to prevent this to happen in the lowering.
+                warnings.warn(
+                    "SDFG WITH POSSIBLE PERFORMANCE DEGRADATION: Mapping a scalar data descriptor "
+                    + "to a symbol on a nested SDFG by means of an InterState edge assignment.",
+                    stacklevel=2,
+                )
+                # This is done by adding a new global scalar and connector on the nested SDFG
+                # and by making an inter-state assignment inside the nested SDFG, on the start
+                # state, that initializes the symbol with the scalar value.
+                source_data_node = lambda_arg_nodes[sym_id].dc_node
+                source_data_desc = source_data_node.desc(ctx.sdfg)
+                assert isinstance(source_data_desc, dace.data.Scalar)
+                # Here we add a new global scalar and connector on the nested SDFG
+                conn, _ = lambda_ctx.sdfg.add_scalar(f"__gtx_{sym_id}", source_data_desc.dtype)
+                input_memlets[conn] = dace.Memlet(data=source_data_node.data, subset="0")
+                if nsdfg_init_state is None:
+                    # We create a new start state to allow initializing the symbol
+                    # on the first inter-state edge.
+                    start_state = lambda_ctx.sdfg.start_block
+                    assert isinstance(start_state, dace.SDFGState)
+                    nsdfg_init_state = lambda_ctx.sdfg.add_state_before(start_state)
+                # We assign the global scalar value to the symbol
+                lambda_ctx.sdfg.out_edges(nsdfg_init_state)[0].data.assignments[sym_id] = conn
+                # Now we remove the old argument mapping, and add an entry
+                # for the newly created connector.
+                arg_node = lambda_arg_nodes.pop(sym_id)
+                lambda_arg_nodes[conn] = arg_node
+            else:
+                nsdfg_symbols_mapping[sym_id] = sym
         for sym, arg in zip(node.params, args, strict=True):
             nsdfg_symbols_mapping |= gtir_builtin_translators.get_arg_symbol_mapping(
                 sym.id, arg, ctx.sdfg
